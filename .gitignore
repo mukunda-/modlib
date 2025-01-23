@@ -1,2 +1,3 @@
 *.AutoSave*.it
 *.bak
+__debug_bin*

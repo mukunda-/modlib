@@ -13,20 +13,24 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
-
-	"go.mukunda.com/modlib/common"
 )
+
+type ItReader struct {
+	Strict bool
+}
 
 type ItModule struct {
 	Header ItModuleHeader
 
+	Orders      []uint8
 	Instruments []ItInstrument
 	Samples     []ItSample
 	Patterns    []ItPattern
+	Message     []byte
 }
 
 type ItModuleHeader struct {
+	FileCode                [4]byte
 	Title                   [26]byte
 	PatternHighlightBeat    uint8
 	PatternHighlightMeasure uint8
@@ -52,8 +56,6 @@ type ItModuleHeader struct {
 
 	ChannelPan    [64]uint8
 	ChannelVolume [64]uint8
-
-	Orders [256]uint8
 }
 
 type ItInstrument struct {
@@ -112,13 +114,13 @@ type ItEnvelope struct {
 	SustainStart uint8
 	SustainEnd   uint8
 
-	Nodes [25]EnvelopeEntry
+	Nodes [25]EnvelopeNode
 
 	_ byte
 }
 
-type EnvelopeEntry struct {
-	Y uint8
+type EnvelopeNode struct {
+	Y int8
 	X uint16
 }
 
@@ -141,7 +143,7 @@ const (
 	SampConvTxWave    = 16
 )
 
-type ItSample struct {
+type ItSampleHeader struct {
 	FileCode       [4]byte
 	DosFilename    [12]byte
 	_              byte
@@ -169,20 +171,48 @@ type ItSample struct {
 	VibratoWaveform uint8
 }
 
-type ItPattern struct {
-	DataLength uint16
-	Rows       uint16
+type ItSample struct {
+	Header   ItSampleHeader
+	Channels uint8
+	Bits     uint8
+
+	// This is decoded data and not the original bytes.
+	// Original is difficult since the samples can be compressed and have no byte-length
+	// indicator in that case.
+	// Contains [][]int16 or [][]int8 (Data[channel][sample])
+	Data []any
+}
+
+type ItPatternHeader struct {
+	DataLength uint16 // Length of packed data
+	Rows       uint16 // Number of rows in the pattern
+	_          uint32 // Reserved
 	//Data       []byte
+}
+
+// Mask constants for the packed pattern data.
+const (
+	PmaskNote       = 1
+	PmaskIns        = 2
+	PmaskVol        = 4
+	PmaskEffect     = 8
+	PmaskLastNote   = 16
+	PmaskLastIns    = 32
+	PmaskLastVol    = 64
+	PmaskLastEffect = 128
+)
+
+type ItPattern struct {
+	Header ItPatternHeader
+
+	// Packed data
+	Data []byte
 }
 
 var ErrInvalidSource = errors.New("invalid/corrupted source")
 var ErrUnsupportedSource = errors.New("unsupported source")
 
-func (m *ItModule) ToCommon() *common.Module {
-	return nil
-}
-
-func LoadITFile(filename string) (*common.Module, error) {
+func LoadITFile(filename string) (*ItModule, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -190,61 +220,10 @@ func LoadITFile(filename string) (*common.Module, error) {
 
 	defer f.Close()
 
-	return LoadITData(f)
+	reader := ItReader{}
+
+	return reader.ReadItModule(f)
 }
-
-// func (m *ITModule) LoadFromFile(filename string) error {
-// 	f, err := os.Open(filename)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	defer f.Close()
-
-// 	m.Load(f)
-// 	return nil
-// }
-
-// type unpacker struct {
-// 	r io.Reader
-// }
-
-// func (up *unpacker) read8() byte {
-// 	var b [1]byte
-// 	_, err := up.r.Read(b[:])
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	return b[0]
-// }
-
-// func (up *unpacker) read16() uint16 {
-// 	var b uint16
-// 	err := binary.Read(up.r, binary.LittleEndian, &b)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	return b
-// }
-
-// func (up *unpacker) read32() uint32 {
-// 	var res uint32
-// 	err := binary.Read(up.r, binary.LittleEndian, &res)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	return res
-// }
-
-// func (up *unpacker) readString(length int) string {
-// 	b := make([]byte, length)
-// 	_, err := up.r.Read(b)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-
-// 	return strings.TrimRight(string(b), "\000")
-// }
 
 const (
 	ItFlagStereo              = 1
@@ -255,289 +234,126 @@ const (
 	ItFlagLinkEFG             = 32
 	ItFlagMidiPitchControl    = 64
 	ItFlagRequestMidiMacros   = 128
-	ItFlagExtendedFilterRange = (1 << 15)
+	ItFlagExtendedFilterRange = 32768
 )
 
-func LoadITData(r io.ReadSeeker) (*common.Module, error) {
-	var m = new(common.Module)
-	m.Source = common.ItSource
-
-	var code [4]byte
-
-	if err := binary.Read(r, binary.LittleEndian, &code); err != nil {
-		return m, err
-	}
-
-	if string(code[:]) != "IMPM" {
-		return m, fmt.Errorf("%w: expected 'IMPM' header", ErrInvalidSource)
-	}
+func (reader *ItReader) ReadItModule(r io.ReadSeeker) (*ItModule, error) {
+	itm := new(ItModule)
 
 	var header ItModuleHeader
 	if err := binary.Read(r, binary.LittleEndian, &header); err != nil {
-		return m, err
+		return nil, err
+	}
+
+	itm.Header = header
+
+	if string(header.FileCode[:]) != "IMPM" {
+		return nil, fmt.Errorf("%w: expected 'IMPM' header", ErrInvalidSource)
 	}
 
 	if header.Cwtv < 0x0217 {
 		// TODO: more support for older versions
-		return m, fmt.Errorf("%w: cwtv < 0x0217 (too old!)", ErrUnsupportedSource)
+		return nil, fmt.Errorf("%w: cwtv < 0x0217 (too old!)", ErrUnsupportedSource)
 	}
 
-	m.Title = strings.TrimRight(string(header.Title[:]), "\000")
-	m.Other = map[string]any{}
-	//m.Other["cwtv"] = int(header.Cwtv)
-	//m.Other["cmwt"] = int(header.Cmwt)
-	//m.Other["itflags"] = int(header.Flags)
-	//m.Other["itspecial"] = int(header.Special)
-
-	m.StereoMixing = (header.Flags & ItFlagStereo) != 0
-	m.UseInstruments = (header.Flags & ItFlagInstruments) != 0
-	m.LinearSlides = (header.Flags & ItFlagLinearSlides) != 0
-	m.OldEffects = (header.Flags & ItFlagOldEffects) != 0
-	m.LinkEFG = (header.Flags & ItFlagLinkEFG) != 0
-
-	m.PatternHighlight_Beat = int16(header.PatternHighlightBeat)
-	m.PatternHighlight_Measure = int16(header.PatternHighlightMeasure)
-
-	m.GlobalVolume = int16(header.GlobalVolume)
-	m.MixingVolume = int16(header.MixingVolume)
-	m.InitialSpeed = int16(header.InitialSpeed)
-	m.InitialTempo = int16(header.InitialTempo)
-	m.PanSeparation = int16(header.Sep)
-	m.PitchWheelDepth = int16(header.PWD)
-
-	m.ChannelSettings = make([]common.ChannelSetting, 64)
-
-	for i := 0; i < 64; i++ {
-		m.ChannelSettings[i].InitialPan = int16(header.ChannelPan[i])
+	orders := make([]uint8, header.OrderCount)
+	if err := binary.Read(r, binary.LittleEndian, &orders); err != nil {
+		return itm, err
 	}
 
-	for i := 0; i < 64; i++ {
-		m.ChannelSettings[i].InitialVolume = int16(header.ChannelVolume[i])
-	}
-
-	{
-		orders := make([]uint8, header.OrderCount)
-		if err := binary.Read(r, binary.LittleEndian, &orders); err != nil {
-			return m, err
-		}
-
-		for i := 0; i < int(header.OrderCount); i++ {
-			if orders[i] == 255 {
-				break
-			}
-			m.Order = append(m.Order, int16(orders[i]))
-		}
-	}
+	itm.Orders = orders
 
 	instrTable := make([]uint32, header.InstrumentCount)
 	sampleTable := make([]uint32, header.SampleCount)
 	patternTable := make([]uint32, header.PatternCount)
 
 	if err := binary.Read(r, binary.LittleEndian, &instrTable); err != nil {
-		return m, err
+		return itm, err
 	}
 
 	if err := binary.Read(r, binary.LittleEndian, &sampleTable); err != nil {
-		return m, err
+		return itm, err
 	}
 
 	if err := binary.Read(r, binary.LittleEndian, &patternTable); err != nil {
-		return m, err
+		return itm, err
 	}
 
 	for i := 0; i < int(header.InstrumentCount); i++ {
 		if instrTable[i] == 0 {
-			// unknown behavior
-			m.Instruments = append(m.Instruments, common.Instrument{})
+			// is this possible?
+			itm.Instruments = append(itm.Instruments, ItInstrument{})
 			continue
 		}
 
 		r.Seek(int64(instrTable[i]), io.SeekStart)
-		if ins, err := loadInstrumentData(r); err != nil {
-			return m, err
+		if ins, err := reader.ReadItInstrument(r); err != nil {
+			return itm, err
 		} else {
-			m.Instruments = append(m.Instruments, ins)
+			itm.Instruments = append(itm.Instruments, ins)
 		}
 	}
+
+	it215 := header.Cmwt >= 0x215
 
 	for i := 0; i < int(header.SampleCount); i++ {
 		if sampleTable[i] == 0 {
 			// unknown behavior
-			m.Samples = append(m.Samples, common.Sample{})
+			itm.Samples = append(itm.Samples, ItSample{})
 			continue
 		}
 
 		r.Seek(int64(sampleTable[i]), io.SeekStart)
-		if sample, err := loadSampleData(r, header.Cwtv >= 0x215); err != nil {
-			return m, err
+		if sample, err := reader.ReadItSample(r, it215); err != nil {
+			return itm, err
 		} else {
-			m.Samples = append(m.Samples, sample)
+			itm.Samples = append(itm.Samples, sample)
 		}
 	}
-
-	channels := int16(0)
 
 	for i := 0; i < int(header.PatternCount); i++ {
 		if patternTable[i] == 0 {
 			// unknown behavior
-			m.Patterns = append(m.Patterns, common.Pattern{})
+			itm.Patterns = append(itm.Patterns, ItPattern{})
 			continue
 		}
 
 		r.Seek(int64(patternTable[i]), io.SeekStart)
-		if pattern, err := loadPattern(r); err != nil {
-			return m, err
+		if pattern, err := reader.readItPattern(r); err != nil {
+			return itm, err
 		} else {
-			m.Patterns = append(m.Patterns, pattern)
-			channels = max(channels, pattern.Channels)
+			itm.Patterns = append(itm.Patterns, pattern)
 		}
 	}
-
-	m.Channels = channels
-	m.ChannelSettings = m.ChannelSettings[:channels]
 
 	if header.MessageLength != 0 {
 		r.Seek(int64(header.MessageOffset), io.SeekStart)
 		msg := make([]byte, header.MessageLength)
 
 		if err := binary.Read(r, binary.LittleEndian, msg); err != nil {
-			return m, err
+			return itm, err
 		}
 
-		m.Message = strings.Trim(string(msg), "\000")
+		itm.Message = msg
 	}
 
-	return m, nil
+	return itm, nil
 }
 
-func loadInstrumentData(r io.ReadSeeker) (common.Instrument, error) {
-	var ins common.Instrument
-
+func (reader *ItReader) ReadItInstrument(r io.Reader) (ItInstrument, error) {
 	var iti ItInstrument
+
 	if err := binary.Read(r, binary.LittleEndian, &iti); err != nil {
-		return ins, err
+		return iti, err
 	}
 
 	if string(iti.FileCode[:]) != "IMPI" {
-		// Ignore if the code is incorrect, maybe propagate a warning somewhere?
-	}
-
-	ins.Name = strings.TrimRight(string(iti.Name[:]), "\000")
-	ins.DosFilename = strings.TrimRight(string(iti.DosFilename[:]), "\000")
-	ins.NewNoteAction = int16(iti.NewNoteAction)
-	ins.DuplicateCheckType = int16(iti.DuplicateCheckType)
-	ins.DuplicateCheckAction = int16(iti.DuplicateCheckAction)
-	ins.Fadeout = int16(iti.Fadeout)
-
-	ins.PitchPanSeparation = int16(iti.PPS)
-	ins.PitchPanCenter = int16(iti.PPC)
-
-	ins.GlobalVolume = int16(iti.GlobalVolume)
-
-	ins.DefaultPan = int16(iti.DefaultPan & 0x7F)
-	ins.DefaultPanEnabled = iti.DefaultPan&128 == 0
-
-	ins.RandomVolumeVariation = int16(iti.RandomVolume)
-	ins.RandomPanVariation = int16(iti.RandomPanning)
-
-	ins.FilterCutoff = int16(iti.InitialFilterCutoff)
-	ins.FilterResonance = int16(iti.InitialFilterResonance)
-
-	ins.MidiChannel = int16(iti.MidiChannel)
-	ins.MidiProgram = int16(iti.MidiProgram)
-	ins.MidiBank = uint16(iti.MidiBank)
-
-	for i := 0; i < 120; i++ {
-		ins.Notemap[i].Note = int16(iti.Notemap[i].Note)
-		ins.Notemap[i].Sample = int16(iti.Notemap[i].Sample)
-	}
-
-	for i := 0; i < 3; i++ {
-		ins.Envelopes = append(ins.Envelopes, translateEnvelope(&iti.Envelopes[i], i))
-	}
-
-	return ins, nil
-}
-
-func translateEnvelope(itenv *ItEnvelope, index int) common.Envelope {
-	var env common.Envelope
-
-	env.Enabled = (itenv.Flags & EnvFlagEnabled) != 0
-	env.Loop = (itenv.Flags & EnvFlagLoop) != 0
-	env.Sustain = (itenv.Flags & EnvFlagSustain) != 0
-
-	env.LoopStart = int16(itenv.LoopStart)
-	env.LoopEnd = int16(itenv.LoopEnd)
-	env.SustainStart = int16(itenv.SustainStart)
-	env.SustainEnd = int16(itenv.SustainEnd)
-
-	if index == 0 {
-		env.Type = common.EnvelopeTypeVolume
-	} else if index == 1 {
-		env.Type = common.EnvelopeTypePanning
-	} else if index == 2 {
-		env.Type = common.EnvelopeTypePitch
-		if itenv.Flags&EnvFlagFilter != 0 {
-			env.Type = common.EnvelopeTypeFilter
+		if reader.Strict {
+			return iti, fmt.Errorf("%w: strict - expected 'IMPI' header", ErrInvalidSource)
 		}
 	}
 
-	for i := 0; i < 25; i++ {
-		if i >= int(itenv.NodeCount) {
-			break
-		}
-		env.Nodes = append(env.Nodes, common.EnvelopeNode{
-			Y: int16(itenv.Nodes[i].Y),
-			X: int16(itenv.Nodes[i].X),
-		})
-	}
-
-	return env
-}
-
-func loadSampleData(r io.ReadSeeker, it215 bool) (common.Sample, error) {
-	var s common.Sample
-	var its ItSample
-	if err := binary.Read(r, binary.LittleEndian, &its); err != nil {
-		return s, err
-	}
-
-	if string(its.FileCode[:]) != "IMPS" {
-		// Ignore if the code is incorrect, maybe propagate a warning somewhere?
-	}
-
-	s.Name = strings.TrimRight(string(its.Name[:]), "\000")
-	s.DosFilename = strings.TrimRight(string(its.DosFilename[:]), "\000")
-
-	s.GlobalVolume = int16(its.GlobalVolume)
-	s.DefaultVolume = int16(its.DefaultVolume)
-	s.DefaultPanning = int16(its.DefaultPanning)
-
-	s.S16 = (its.Flags & SampFlag16bit) != 0
-	s.Stereo = (its.Flags & SampFlagStereo) != 0
-	s.Loop = (its.Flags & SampFlagLoop) != 0
-	s.Sustain = (its.Flags & SampFlagSustain) != 0
-	s.PingPong = (its.Flags & SampFlagPingPong) != 0
-	s.PingPongSustain = (its.Flags & SampFlagPingPongSustain) != 0
-
-	s.LoopStart = int(its.LoopStart)
-	s.LoopEnd = int(its.LoopEnd)
-
-	s.C5 = int(its.C5)
-
-	s.VibratoSpeed = int16(its.VibratoSpeed)
-	s.VibratoDepth = int16(its.VibratoDepth)
-	s.VibratoSweep = int16(its.VibratoSweep)
-	s.VibratoWaveform = int16(its.VibratoWaveform)
-
-	r.Seek(int64(its.SamplePointer), io.SeekStart)
-	if data, err := its.loadSampleData(r, it215); err != nil {
-		return s, err
-	} else {
-		s.Data = data
-	}
-
-	return s, nil
+	return iti, nil
 }
 
 func readPcm[T int8 | int16](r io.ReadSeeker, length int, offset int) ([]T, error) {
@@ -553,29 +369,43 @@ func readPcm[T int8 | int16](r io.ReadSeeker, length int, offset int) ([]T, erro
 	return data, nil
 }
 
-func (s *ItSample) loadSampleData(r io.ReadSeeker, it215 bool) (common.SampleData, error) {
-
-	if s.Convert&SampConvDelta != 0 {
-		return common.SampleData{}, fmt.Errorf("%w: delta-encoded samples not supported", ErrUnsupportedSource)
+func (reader *ItReader) ReadItSample(r io.ReadSeeker, it215 bool) (ItSample, error) {
+	var header ItSampleHeader
+	var its ItSample
+	if err := binary.Read(r, binary.LittleEndian, &header); err != nil {
+		return its, err
 	}
 
-	data := common.SampleData{}
+	its.Header = header
+	if string(header.FileCode[:]) != "IMPS" {
+		if reader.Strict {
+			return its, fmt.Errorf("%w: strict - expected 'IMPS' header", ErrInvalidSource)
+		}
+	}
 
-	compressed := s.Flags&SampFlagCompressed != 0
-	signed := s.Convert&SampConvSigned != 0
-	bits16 := s.Flags&SampFlag16bit != 0
-	stereo := s.Flags&SampFlagStereo != 0
-	length := int(s.Length)
+	r.Seek(int64(header.SamplePointer), io.SeekStart)
 
-	data.Channels = 1
+	if header.Convert&SampConvDelta != 0 {
+		// TODO: support this.
+		return its, fmt.Errorf("%w: delta-encoded samples not supported", ErrUnsupportedSource)
+	}
+
+	//data := common.SampleData{}
+
+	compressed := header.Flags&SampFlagCompressed != 0
+	signed := header.Convert&SampConvSigned != 0
+	bits16 := header.Flags&SampFlag16bit != 0
+	stereo := header.Flags&SampFlagStereo != 0
+	length := int(header.Length)
+
+	its.Channels = 1
 	if stereo {
-		data.Channels = 2
-		length >>= 1
+		its.Channels = 2
 	}
 
-	data.Bits = 8
+	its.Bits = 8
 	if bits16 {
-		data.Bits = 16
+		its.Bits = 16
 	}
 
 	// For unsigned samples, use an offset.
@@ -588,23 +418,23 @@ func (s *ItSample) loadSampleData(r io.ReadSeeker, it215 bool) (common.SampleDat
 		}
 	}
 
-	for ch := 0; ch < int(data.Channels); ch++ {
+	for ch := 0; ch < int(its.Channels); ch++ {
 		if !compressed {
 
 			if bits16 {
 				d, err := readPcm[int16](r, length, offset)
 				if err != nil {
-					return common.SampleData{}, err
+					return its, err
 				}
 
-				data.Data = append(data.Data, d)
+				its.Data = append(its.Data, d)
 			} else {
 				d, err := readPcm[int8](r, length, offset)
 				if err != nil {
-					return common.SampleData{}, err
+					return its, err
 				}
 
-				data.Data = append(data.Data, d)
+				its.Data = append(its.Data, d)
 			}
 		} else {
 			decoder := ItSampleCodec{
@@ -614,204 +444,39 @@ func (s *ItSample) loadSampleData(r io.ReadSeeker, it215 bool) (common.SampleDat
 
 			decoded, err := decoder.Decode(r, length)
 			if err != nil {
-				return common.SampleData{}, err
+				return its, err
 			}
 
 			if bits16 {
-				data.Data = append(data.Data, decoded)
+				its.Data = append(its.Data, decoded)
 			} else {
 				data8 := make([]int8, len(decoded))
 				for i := 0; i < len(decoded); i++ {
 					data8[i] = int8(decoded[i])
 				}
-				data.Data = append(data.Data, data8)
+				its.Data = append(its.Data, data8)
 			}
-
-			/*
-				totalData := []int16{}
-				remainingLength := length
-				for remainingLength > 0 {
-					d, err := s.decompressItSampleChunk(r, remainingLength, bits16, it215)
-					if err != nil {
-						return common.SampleData{}, err
-					}
-
-					totalData = append(totalData, d...)
-					remainingLength -= len(d)
-				}
-
-				data.Data = append(data.Data, totalData)*/
-
-			//return nil, fmt.Errorf("%w: compressed samples not supported", ErrUnsupportedSource)
 		}
 	}
 
-	return data, nil
+	return its, nil
 }
 
-/*
-	func (s *ItSample) decompressItSampleChunk(r io.ReadSeeker, remainingLength int, bits16 bool, it215 bool) ([]int16, error) {
-		var chunkSize uint16
-		if err := binary.Read(r, binary.LittleEndian, &chunkSize); err != nil {
-			return nil, err
-		}
-
-		chunk := make([]byte, chunkSize)
-		if err := binary.Read(r, binary.LittleEndian, &chunk); err != nil {
-			return nil, err
-		}
-
-		return nil, nil
-	}
-*/
-func translateNote(note uint8) uint8 {
-	if note <= 120 {
-		return note + 1
-	} else if note == 253 {
-		return 200
-	} else if note == 254 {
-		return 201
-	} else if note == 255 {
-		return 202
-	} else {
-		return 0
-	}
-}
-
-func translatePatternVolume(vol uint8) (uint8, uint8) {
-	if vol <= 64 {
-		return 1, vol
-	} else if vol <= 74 {
-		return 2, vol - 65
-	} else if vol <= 84 {
-		return 3, vol - 75
-	} else if vol <= 94 {
-		return 4, vol - 85
-	} else if vol <= 104 {
-		return 5, vol - 95
-	} else if vol <= 114 {
-		return 6, vol - 105
-	} else if vol <= 124 {
-		return 7, vol - 125
-	} else if vol <= 127 {
-		return 0, 0
-	} else if vol <= 128 {
-		return 8, vol - 128
-	} else if vol <= 202 {
-		return 9, vol - 129
-	} else if vol <= 212 {
-		return 10, vol - 203
-	}
-	return 0, 0
-}
-
-const (
-	PmaskNote       = 1
-	PmaskIns        = 2
-	PmaskVol        = 4
-	PmaskEffect     = 8
-	PmaskLastNote   = 16
-	PmaskLastIns    = 32
-	PmaskLastVol    = 64
-	PmaskLastEffect = 128
-)
-
-func loadPattern(r io.ReadSeeker) (common.Pattern, error) {
-	var p common.Pattern
+func (reader *ItReader) readItPattern(r io.ReadSeeker) (ItPattern, error) {
 	var itp ItPattern
-	if err := binary.Read(r, binary.LittleEndian, &itp); err != nil {
-		return p, err
+	var header ItPatternHeader
+	if err := binary.Read(r, binary.LittleEndian, &header); err != nil {
+		return itp, err
 	}
 
-	data := make([]byte, itp.DataLength)
+	itp.Header = header
+
+	data := make([]byte, header.DataLength)
 	if err := binary.Read(r, binary.LittleEndian, &data); err != nil {
-		return p, err
+		return itp, err
 	}
 
-	// Unpack data
-	dataRead := 0
-	failure := false
+	itp.Data = data
 
-	nextByte := func() byte {
-		if dataRead >= len(data) {
-			failure = true
-			return 0
-		}
-
-		byt := data[dataRead]
-		dataRead++
-		return byt
-	}
-
-	var lastMask [64]byte
-	var lastNote [64]byte
-	var lastIns [64]byte
-	var lastVol [64]byte
-	var lastEffect [64]byte
-	var lastEffectParam [64]byte
-
-	channels := 0
-
-	for row := 0; row < int(itp.Rows); row++ {
-		for {
-			channelSelect := nextByte()
-			if channelSelect == 0 {
-				break
-			}
-
-			entry := common.PatternChannelEntry{}
-
-			channel := int((channelSelect - 1) & 63)
-			if channel >= channels {
-				channels = channel + 1
-			}
-
-			if channelSelect&0x80 != 0 {
-				lastMask[channel] = nextByte()
-			}
-			mask := lastMask[channel]
-
-			if mask&PmaskNote != 0 {
-				lastNote[channel] = nextByte()
-			}
-
-			if mask&(PmaskNote|PmaskLastNote) != 0 {
-				entry.Note = translateNote(lastNote[channel])
-			}
-
-			if mask&PmaskIns != 0 {
-				lastIns[channel] = nextByte()
-			}
-
-			if mask&(PmaskIns|PmaskLastIns) != 0 {
-				entry.Instrument = int16(lastIns[channel]) // add one here? or is 1 lowest?
-			}
-
-			if mask&PmaskVol != 0 {
-				lastVol[channel] = nextByte()
-			}
-
-			if mask&(PmaskVol|PmaskLastVol) != 0 {
-				entry.VolumeCommand, entry.VolumeParam = translatePatternVolume(lastVol[channel])
-			}
-
-			if mask&PmaskEffect != 0 {
-				lastEffect[channel] = nextByte()
-				lastEffectParam[channel] = nextByte()
-			}
-
-			if mask&(PmaskEffect|PmaskLastEffect) != 0 {
-				entry.Effect = lastEffect[channel]
-				entry.EffectParam = lastEffectParam[channel]
-			}
-		}
-
-		if failure {
-			return p, fmt.Errorf("%w: unexpected end of pattern data", ErrInvalidSource)
-		}
-	}
-
-	p.Channels = int16(channels)
-
-	return p, nil
+	return itp, nil
 }

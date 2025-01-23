@@ -20,20 +20,19 @@ const (
 
 type Module struct {
 	Source          ModuleSourceFormat
-	Title           string         // The title of the song.
-	GlobalVolume    int16          // The initial global volume. 0 = 0%, 128 = 100%
-	MixingVolume    int16          // Mixing volume of the song. 0 = 0%, 128 = 100%
-	InitialSpeed    int16          // Initial ticks per row (Axx)
-	InitialTempo    int16          // Initial BPM.
-	PanSeparation   int16          // TODO: how does it work
-	PitchWheelDepth int16          // TODO: what is it for
-	Other           map[string]any // Contains other values that don't have common fields.
-	StereoMixing    bool           // Enable stereo audio mixing.
-	UseInstruments  bool           // Enable use of instruments.
-	LinearSlides    bool           // Linear slides instead of Amiga slides.
-	OldEffects      bool           // Enable old effect behavior (IT)
-	LinkEFG         bool           // Share memory between G and EF.
-	Channels        int16          // Number of channels.
+	Title           string // The title of the song.
+	GlobalVolume    int16  // The initial global volume. 0 = 0%, 128 = 100%
+	MixingVolume    int16  // Mixing volume of the song. 0 = 0%, 128 = 100%
+	InitialSpeed    int16  // Initial ticks per row (Axx)
+	InitialTempo    int16  // Initial BPM.
+	PanSeparation   int16  // TODO: how does it work
+	PitchWheelDepth int16  // TODO: what is it for
+	StereoMixing    bool   // Enable stereo audio mixing.
+	UseInstruments  bool   // Enable use of instruments.
+	LinearSlides    bool   // Linear slides instead of Amiga slides.
+	OldEffects      bool   // Enable old effect behavior (IT)
+	LinkEFG         bool   // Share memory between G and EF.
+	Channels        int16  // Number of channels.
 
 	// The embedded "song message" text.
 	Message string
@@ -69,6 +68,7 @@ const (
 	DctNote       = 1
 	DctSample     = 2
 	DctInstrument = 3
+	DctPlugin     = 4
 )
 
 type Instrument struct {
@@ -137,6 +137,13 @@ type EnvelopeNode struct {
 	Y int16
 }
 
+const (
+	SampleVibratoWaveformSine   = 0
+	SampleVibratoWaveformRamp   = 1
+	SampleVibratoWaveformSquare = 2
+	SampleVibratoWaveformRandom = 3
+)
+
 type Sample struct {
 	Name        string
 	DosFilename string
@@ -152,8 +159,10 @@ type Sample struct {
 	PingPong        bool
 	PingPongSustain bool
 
-	LoopStart int
-	LoopEnd   int
+	LoopStart        int
+	LoopEnd          int
+	SustainLoopStart int
+	SustainLoopEnd   int
 
 	C5 int
 
@@ -181,13 +190,13 @@ type Pattern struct {
 }
 
 type PatternRow struct {
-	Entries []PatternChannelEntry
+	Entries []PatternEntry
 }
 
-type PatternChannelEntry struct {
+type PatternEntry struct {
 	Channel uint8
 
-	// 0 = Empty, 1 = C-0, 120 = B-9, 200 = NoteFade, 201 = NoteCut, 202 = NoteOff
+	// 0 = Empty, 1 = C-0, 120 = B-9, 253 = NoteFade, 254 = NoteCut, 255 = NoteOff
 	Note uint8
 
 	// Set instrument index (0 = empty)
