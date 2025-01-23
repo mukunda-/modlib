@@ -1,5 +1,6 @@
-## itmod
+## modlib
 
-A library for reading Impulse Tracker files.
+A package for reading and writing tracker (music) module formats.
 
-Writing is not supported, but PRs are welcome!
+Early stages here!
+

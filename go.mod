@@ -1,4 +1,4 @@
-module go.mukunda.com/itmod
+module go.mukunda.com/modlib
 
 go 1.23.5
 
