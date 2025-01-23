@@ -19,8 +19,10 @@ import (
 // Returned when the module format could not be detected.
 var ErrUnknownModuleFormat = errors.New("unknown or unsupported module format")
 
+type Module = common.Module
+
 // Load a module by filename.
-func LoadModule(filename string) (*common.Module, error) {
+func LoadModule(filename string) (*Module, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -33,7 +35,7 @@ func LoadModule(filename string) (*common.Module, error) {
 }
 
 // Load a module from an open stream. Seeking is required for module loading.
-func LoadModuleFromStream(r io.ReadSeeker) (*common.Module, error) {
+func LoadModuleFromStream(r io.ReadSeeker) (*Module, error) {
 	signature := make([]byte, 4)
 	if _, err := io.ReadFull(r, signature); err != nil {
 		return nil, err
