@@ -27,7 +27,7 @@ type ItSampleCodec struct {
 
 var ErrDecodingError = errors.New("decoding error")
 
-type ItSampleCodecParams struct {
+type itSampleCodecParams struct {
 	lowerTab []int16
 	upperTab []int16
 	fetchA   int
@@ -38,7 +38,7 @@ type ItSampleCodecParams struct {
 }
 
 // Algorithm parameters for 16-Bit samples
-var ItSampleCodecParams16 = ItSampleCodecParams{
+var itSampleCodecParams16 = itSampleCodecParams{
 	lowerTab: []int16{0, -1, -3, -7, -15, -31, -56, -120, -248, -504, -1016, -2040, -4088, -8184, -16376, -32760, -32768},
 	upperTab: []int16{0, 1, 3, 7, 15, 31, 55, 119, 247, 503, 1015, 2039, 4087, 8183, 16375, 32759, 32767},
 	fetchA:   4,
@@ -49,7 +49,7 @@ var ItSampleCodecParams16 = ItSampleCodecParams{
 }
 
 // Algorithm parameters for 8-Bit samples
-var ItSampleCodecParams8 = ItSampleCodecParams{
+var itSampleCodecParams8 = itSampleCodecParams{
 	lowerTab: []int16{0, -1, -3, -7, -15, -31, -60, -124, -128},
 	upperTab: []int16{0, 1, 3, 7, 15, 31, 59, 123, 127},
 	fetchA:   3,
@@ -112,9 +112,9 @@ func (c *ItSampleCodec) decodeChunk(r io.Reader, remainingLength int) ([]int16, 
 
 	curLength := min(remainingLength, maxBlockLength)
 
-	props := &ItSampleCodecParams8
+	props := &itSampleCodecParams8
 	if c.Is16 {
-		props = &ItSampleCodecParams16
+		props = &itSampleCodecParams16
 	}
 	width := props.defWidth
 
@@ -193,150 +193,3 @@ func (c *ItSampleCodec) decodeChunk(r io.Reader, remainingLength int) ([]int16, 
 func (*ItSampleCodec) Encode(r io.Reader, sampleLength int) ([]byte, error) {
 	return nil, nil
 }
-
-/*
-me trying to make sense of greasemonkey's code until looking at openmpt
-func (*ItSampleDecoder) decodeChunk(r io.Reader, is16 bool, remainingLength int) ([]int16, error) {
-
-	bytepos := 0
-	bitpos := 0
-
-	//base_length := remainingLength
-	grab_length := remainingLength
-	running_count := 0
-
-	fetch_a := 3
-	//spread_b := 8
-	lower_b := -4
-	upper_b := 3
-	width := 9
-	widthtop := 9
-	unpack_mask := 0xFF
-	maxgrablen := 0x8000
-	if is16 {
-		fetch_a = 4
-		//spread_b = 16
-		lower_b = -8
-		upper_b = 7
-		width = 17
-		widthtop = 17
-		unpack_mask = 0xFFFF
-		maxgrablen = 0x4000
-	}
-
-	// Read in a chunk.
-	var byteLength uint16
-	err := binary.Read(r, binary.LittleEndian, &byteLength)
-	if err != nil {
-		return nil, err
-	}
-
-	bytes := make([]byte, byteLength)
-	err = binary.Read(r, binary.LittleEndian, &bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	end_of_block := func() bool {
-		return bytepos >= len(bytes)
-	}
-
-	change_width := func(w int) {
-		w += 1
-		if w >= width {
-			w += 1
-		}
-		width = w
-	}
-
-	// Read a number of bits from the stream.
-	read := func(numBits int) (int, error) {
-		result := 0
-		valueWritePos := 0
-
-		for numBits > 0 {
-			if bytepos > len(bytes) {
-				return 0, fmt.Errorf("%w: unexpected end of data", ErrDecodingError)
-			}
-			remaining := 8 - bitpos
-			if numBits >= remaining {
-				result |= int(bytes[bytepos]) >> bitpos << valueWritePos
-				bytepos++
-				bitpos = 0
-				numBits -= remaining
-				valueWritePos += remaining
-			} else {
-				result |= ((int(bytes[bytepos]) >> bitpos) & (1<<numBits - 1)) << valueWritePos
-				valueWritePos += numBits
-				bitpos += numBits
-				numBits = 0
-			}
-		}
-		return result, nil
-	}
-	unpacked_root := 0
-	length := min(grab_length, maxgrablen)
-	unpacked_data := []int16{}
-
-	write := func(value int, topbit int) {
-		running_count += 1
-		length -= 1
-
-		v := value
-		if v&topbit != 0 {
-			v -= topbit * 2
-		}
-		unpacked_root = (unpacked_root + v) & unpack_mask
-		unpacked_data = append(unpacked_data, int16(unpacked_root))
-	}
-
-	grab_length -= length
-	//print "subchunk length: %i" % length
-
-	for length > 0 && !end_of_block() {
-		if width == 0 || width > widthtop {
-			return nil, fmt.Errorf("%w: invalid bit width", ErrDecodingError)
-		}
-
-		value, err := read(width)
-		if err != nil {
-			return nil, err
-		}
-
-		topbit := int(1 << (width - 1))
-
-		if width <= 6 { // MODE A
-			if value == topbit {
-				w, err := read(fetch_a)
-				if err != nil {
-					return nil, err
-				}
-				change_width(int(w))
-				//#print width
-			} else {
-				write(int(value), topbit)
-			}
-		} else if width < widthtop { // # MODE B
-			if value >= topbit+lower_b && value <= topbit+upper_b {
-				qv := value - (topbit + lower_b)
-				//#print "MODE B CHANGE",width,value,qv
-				change_width(qv)
-				//#print width
-			} else {
-				write(value, topbit)
-			}
-		} else { //# MODE C
-			if value&topbit != 0 {
-				width = (value & ^topbit) + 1
-				//#print width
-			} else {
-				write((value & ^topbit), 0)
-			}
-		}
-	}
-
-	//print "bytes remaining in block: %i" % (len(data)-dpos)
-
-	return unpacked_data, nil
-}
-*/

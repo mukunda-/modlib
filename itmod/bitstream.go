@@ -6,7 +6,7 @@ package itmod
 
 import "errors"
 
-// A little-endia bitstream.
+// A little-endian bit stream.
 type bitstream struct {
 	source  []byte
 	readPos int
@@ -21,10 +21,12 @@ type bitstream struct {
 var ErrEndOfStream = errors.New("end of stream")
 var ErrBadParam = errors.New("bad param")
 
+// Wrap a []byte source into a bit stream for reading.
 func createBitstream(source []byte) bitstream {
 	return bitstream{source: source}
 }
 
+// Read a number of bits from a stream and return it as a uint32. Max read amount is 32.
 func (bs *bitstream) read(width int) (uint32, error) {
 	if width < 0 || width >= 32 {
 		return 0, ErrBadParam

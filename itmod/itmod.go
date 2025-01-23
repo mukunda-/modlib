@@ -3,7 +3,7 @@
 // Licensed under MIT
 
 /*
-Package itmod is for working with Impulse Tracker files.
+This package is for working with Impulse Tracker files directly.
 */
 package itmod
 
@@ -15,10 +15,14 @@ import (
 	"os"
 )
 
+// This is used to read IT files.
 type ItReader struct {
+	// Enable extra checks that will cause loading errors if incorrect or corrupted data is
+	// detected.
 	Strict bool
 }
 
+// Holds all components of an IT file.
 type ItModule struct {
 	Header ItModuleHeader
 
@@ -29,6 +33,7 @@ type ItModule struct {
 	Message     []byte
 }
 
+// The direct structure of the main IT file header.
 type ItModuleHeader struct {
 	FileCode                [4]byte
 	Title                   [26]byte
@@ -58,6 +63,8 @@ type ItModuleHeader struct {
 	ChannelVolume [64]uint8
 }
 
+// IT files have a number of instruments that interact with samples. This is the direct
+// file structure.
 type ItInstrument struct {
 	FileCode    [4]byte
 	DosFilename [12]byte
@@ -91,12 +98,15 @@ type ItInstrument struct {
 
 	Notemap [120]NotemapEntry
 
+	// Fixed 3 envelopes in the file, volume, panning, and pitch/filter.
 	Envelopes [3]ItEnvelope
 }
 
+// The notemap in an IT file is for complex instruments that have different samples for
+// different ranges. It can also remap the notes themselves.
 type NotemapEntry struct {
-	Note   uint8
-	Sample uint8
+	Note   uint8 // 0-119 - maps a note to another note
+	Sample uint8 // Which sample to use for this note
 }
 
 const (
@@ -106,6 +116,7 @@ const (
 	EnvFlagFilter  = 128
 )
 
+// Each instrument has 3 envelopes for controlling volume, panning, and pitch/filter.
 type ItEnvelope struct {
 	Flags        uint8
 	NodeCount    uint8
@@ -124,6 +135,7 @@ type EnvelopeNode struct {
 	X uint16
 }
 
+// Bitmask for Flags in the sample header.
 const (
 	SampFlagHeader          = 1
 	SampFlag16bit           = 2
@@ -135,6 +147,7 @@ const (
 	SampFlagPingPongSustain = 128
 )
 
+// Bitmask for Convert in the sample header.
 const (
 	SampConvSigned    = 1
 	SampConvBigEndian = 2
@@ -143,6 +156,7 @@ const (
 	SampConvTxWave    = 16
 )
 
+// File structure of an IT sample.
 type ItSampleHeader struct {
 	FileCode       [4]byte
 	DosFilename    [12]byte
@@ -171,23 +185,23 @@ type ItSampleHeader struct {
 	VibratoWaveform uint8
 }
 
+// Container for the header and data of a sample. The data is not directly copied from the
+// file, it's decoded into signed PCM. Keeping the original data is difficult since the
+// samples can be compressed and have no byte-length indicator.
 type ItSample struct {
 	Header   ItSampleHeader
 	Channels uint8
 	Bits     uint8
 
-	// This is decoded data and not the original bytes.
-	// Original is difficult since the samples can be compressed and have no byte-length
-	// indicator in that case.
 	// Contains [][]int16 or [][]int8 (Data[channel][sample])
 	Data []any
 }
 
+// File structure of a pattern header.
 type ItPatternHeader struct {
 	DataLength uint16 // Length of packed data
 	Rows       uint16 // Number of rows in the pattern
 	_          uint32 // Reserved
-	//Data       []byte
 }
 
 // Mask constants for the packed pattern data.
@@ -202,6 +216,8 @@ const (
 	PmaskLastEffect = 128
 )
 
+// Container for a pattern. The Data is separate into here so encoding/binary can be used
+// on the header separately.
 type ItPattern struct {
 	Header ItPatternHeader
 
@@ -212,6 +228,7 @@ type ItPattern struct {
 var ErrInvalidSource = errors.New("invalid/corrupted source")
 var ErrUnsupportedSource = errors.New("unsupported source")
 
+// Load an IT file into memory.
 func LoadITFile(filename string) (*ItModule, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -237,6 +254,7 @@ const (
 	ItFlagExtendedFilterRange = 32768
 )
 
+// Load an IT file into memory from the given stream.
 func (reader *ItReader) ReadItModule(r io.ReadSeeker) (*ItModule, error) {
 	itm := new(ItModule)
 
@@ -340,6 +358,7 @@ func (reader *ItReader) ReadItModule(r io.ReadSeeker) (*ItModule, error) {
 	return itm, nil
 }
 
+// Read out an IT instrument from the stream.
 func (reader *ItReader) ReadItInstrument(r io.Reader) (ItInstrument, error) {
 	var iti ItInstrument
 
@@ -356,6 +375,7 @@ func (reader *ItReader) ReadItInstrument(r io.Reader) (ItInstrument, error) {
 	return iti, nil
 }
 
+// Read raw PCM data with an offset applied (for adding sign to samples).
 func readPcm[T int8 | int16](r io.ReadSeeker, length int, offset int) ([]T, error) {
 	data := make([]T, length)
 	if err := binary.Read(r, binary.LittleEndian, &data); err != nil {
@@ -369,6 +389,7 @@ func readPcm[T int8 | int16](r io.ReadSeeker, length int, offset int) ([]T, erro
 	return data, nil
 }
 
+// Read an IT sample from the stream. it215 affects the decompression parameters for compressed samples.
 func (reader *ItReader) ReadItSample(r io.ReadSeeker, it215 bool) (ItSample, error) {
 	var header ItSampleHeader
 	var its ItSample
@@ -462,6 +483,7 @@ func (reader *ItReader) ReadItSample(r io.ReadSeeker, it215 bool) (ItSample, err
 	return its, nil
 }
 
+// Read an IT pattern from the stream. The data is not unpacked.
 func (reader *ItReader) readItPattern(r io.ReadSeeker) (ItPattern, error) {
 	var itp ItPattern
 	var header ItPatternHeader

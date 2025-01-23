@@ -3,8 +3,7 @@
 // Licensed under MIT
 
 /*
-Package common provides a medium for all supported sources. All submodules load into this
-intermediate format, which is based on IT.
+This package provides a medium for all supported sources. All submodules can convert into this structure which is based on IT.
 */
 package common
 
