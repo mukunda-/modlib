@@ -18,6 +18,14 @@ import (
 	"go.mukunda.com/modlib/common"
 )
 
+type ItModule struct {
+	Header ItModuleHeader
+
+	Instruments []ItInstrument
+	Samples     []ItSample
+	Patterns    []ItPattern
+}
+
 type ItModuleHeader struct {
 	Title                   [26]byte
 	PatternHighlightBeat    uint8
@@ -45,11 +53,7 @@ type ItModuleHeader struct {
 	ChannelPan    [64]uint8
 	ChannelVolume [64]uint8
 
-	// Orders [256]uint8
-
-	// Instruments []Instrument
-	// Samples     []Sample
-	// Patterns    []Pattern
+	Orders [256]uint8
 }
 
 type ItInstrument struct {
@@ -85,9 +89,7 @@ type ItInstrument struct {
 
 	Notemap [120]NotemapEntry
 
-	VolumeEnvelope  ItEnvelope
-	PanningEnvelope ItEnvelope
-	PitchEnvelope   ItEnvelope
+	Envelopes [3]ItEnvelope
 }
 
 type NotemapEntry struct {
@@ -167,32 +169,18 @@ type ItSample struct {
 	VibratoWaveform uint8
 }
 
-// TODO I don't think this needs to be separated
-type ItSampleData struct {
-	Bits16       bool
-	Length       int
-	LoopStart    int
-	LoopEnd      int
-	C5Speed      int
-	SustainStart int
-	SustainEnd   int
-	Loop         bool
-	Sustain      bool
-	BidiLoop     bool
-	BidiSustain  bool
-
-	// Can be []int16 or []int8
-	Data any
-}
-
 type ItPattern struct {
 	DataLength uint16
 	Rows       uint16
-	Data       []byte
+	//Data       []byte
 }
 
 var ErrInvalidSource = errors.New("invalid/corrupted source")
 var ErrUnsupportedSource = errors.New("unsupported source")
+
+func (m *ItModule) ToCommon() *common.Module {
+	return nil
+}
 
 func LoadITFile(filename string) (*common.Module, error) {
 	f, err := os.Open(filename)
@@ -290,15 +278,16 @@ func LoadITData(r io.ReadSeeker) (*common.Module, error) {
 	}
 
 	if header.Cwtv < 0x0217 {
+		// TODO: more support for older versions
 		return m, fmt.Errorf("%w: cwtv < 0x0217 (too old!)", ErrUnsupportedSource)
 	}
 
 	m.Title = strings.TrimRight(string(header.Title[:]), "\000")
 	m.Other = map[string]any{}
-	m.Other["cwtv"] = int(header.Cwtv)
-	m.Other["cmwt"] = int(header.Cmwt)
-	m.Other["itflags"] = int(header.Flags)
-	m.Other["itspecial"] = int(header.Special)
+	//m.Other["cwtv"] = int(header.Cwtv)
+	//m.Other["cmwt"] = int(header.Cmwt)
+	//m.Other["itflags"] = int(header.Flags)
+	//m.Other["itspecial"] = int(header.Special)
 
 	m.StereoMixing = (header.Flags & ItFlagStereo) != 0
 	m.UseInstruments = (header.Flags & ItFlagInstruments) != 0
@@ -319,7 +308,7 @@ func LoadITData(r io.ReadSeeker) (*common.Module, error) {
 	m.ChannelSettings = make([]common.ChannelSetting, 64)
 
 	for i := 0; i < 64; i++ {
-		m.ChannelSettings[i].InitialPan = int16(header.ChannelPan[i]) * 2
+		m.ChannelSettings[i].InitialPan = int16(header.ChannelPan[i])
 	}
 
 	for i := 0; i < 64; i++ {
@@ -386,6 +375,8 @@ func LoadITData(r io.ReadSeeker) (*common.Module, error) {
 		}
 	}
 
+	channels := int16(0)
+
 	for i := 0; i < int(header.PatternCount); i++ {
 		if patternTable[i] == 0 {
 			// unknown behavior
@@ -398,8 +389,12 @@ func LoadITData(r io.ReadSeeker) (*common.Module, error) {
 			return m, err
 		} else {
 			m.Patterns = append(m.Patterns, pattern)
+			channels = max(channels, pattern.Channels)
 		}
 	}
+
+	m.Channels = channels
+	m.ChannelSettings = m.ChannelSettings[:channels]
 
 	if header.MessageLength != 0 {
 		r.Seek(int64(header.MessageOffset), io.SeekStart)
@@ -434,7 +429,7 @@ func loadInstrumentData(r io.ReadSeeker) (common.Instrument, error) {
 	ins.DuplicateCheckAction = int16(iti.DuplicateCheckAction)
 	ins.Fadeout = int16(iti.Fadeout)
 
-	ins.PitchPanSeparation = int16(iti.PPC)
+	ins.PitchPanSeparation = int16(iti.PPS)
 	ins.PitchPanCenter = int16(iti.PPC)
 
 	ins.GlobalVolume = int16(iti.GlobalVolume)
@@ -458,27 +453,23 @@ func loadInstrumentData(r io.ReadSeeker) (common.Instrument, error) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if env, err := loadEnvelopeData(r, i); err != nil {
-			return ins, err
-		} else {
-			ins.Envelopes = append(ins.Envelopes, env)
-		}
+		ins.Envelopes = append(ins.Envelopes, translateEnvelope(&iti.Envelopes[i], i))
 	}
 
 	return ins, nil
 }
 
-func loadEnvelopeData(r io.ReadSeeker, index int) (common.Envelope, error) {
+func translateEnvelope(itenv *ItEnvelope, index int) common.Envelope {
 	var env common.Envelope
-
-	var itenv ItEnvelope
-	if err := binary.Read(r, binary.LittleEndian, &itenv); err != nil {
-		return env, err
-	}
 
 	env.Enabled = (itenv.Flags & EnvFlagEnabled) != 0
 	env.Loop = (itenv.Flags & EnvFlagLoop) != 0
 	env.Sustain = (itenv.Flags & EnvFlagSustain) != 0
+
+	env.LoopStart = int16(itenv.LoopStart)
+	env.LoopEnd = int16(itenv.LoopEnd)
+	env.SustainStart = int16(itenv.SustainStart)
+	env.SustainEnd = int16(itenv.SustainEnd)
 
 	if index == 0 {
 		env.Type = common.EnvelopeTypeVolume
@@ -489,8 +480,6 @@ func loadEnvelopeData(r io.ReadSeeker, index int) (common.Envelope, error) {
 		if itenv.Flags&EnvFlagFilter != 0 {
 			env.Type = common.EnvelopeTypeFilter
 		}
-	} else {
-		return env, fmt.Errorf("%w: invalid envelope index", ErrInvalidSource)
 	}
 
 	for i := 0; i < 25; i++ {
@@ -503,7 +492,7 @@ func loadEnvelopeData(r io.ReadSeeker, index int) (common.Envelope, error) {
 		})
 	}
 
-	return env, nil
+	return env
 }
 
 func loadSampleData(r io.ReadSeeker, it215 bool) (common.Sample, error) {
@@ -761,6 +750,8 @@ func loadPattern(r io.ReadSeeker) (common.Pattern, error) {
 	var lastEffect [64]byte
 	var lastEffectParam [64]byte
 
+	channels := 0
+
 	for row := 0; row < int(itp.Rows); row++ {
 		for {
 			channelSelect := nextByte()
@@ -771,6 +762,10 @@ func loadPattern(r io.ReadSeeker) (common.Pattern, error) {
 			entry := common.PatternChannelEntry{}
 
 			channel := int((channelSelect - 1) & 63)
+			if channel >= channels {
+				channels = channel + 1
+			}
+
 			if channelSelect&0x80 != 0 {
 				lastMask[channel] = nextByte()
 			}
@@ -815,6 +810,8 @@ func loadPattern(r io.ReadSeeker) (common.Pattern, error) {
 			return p, fmt.Errorf("%w: unexpected end of pattern data", ErrInvalidSource)
 		}
 	}
+
+	p.Channels = int16(channels)
 
 	return p, nil
 }

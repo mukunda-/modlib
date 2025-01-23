@@ -3,7 +3,8 @@
 // Licensed under MIT
 
 /*
-Package common provides a medium for all supported sources.
+Package common provides a medium for all supported sources. All submodules load into this
+intermediate format, which is based on IT.
 */
 package common
 
@@ -32,6 +33,7 @@ type Module struct {
 	LinearSlides    bool           // Linear slides instead of Amiga slides.
 	OldEffects      bool           // Enable old effect behavior (IT)
 	LinkEFG         bool           // Share memory between G and EF.
+	Channels        int16          // Number of channels.
 
 	// The embedded "song message" text.
 	Message string
@@ -49,8 +51,8 @@ type Module struct {
 
 type ChannelSetting struct {
 	Name          string
-	InitialVolume int16
-	InitialPan    int16
+	InitialVolume int16 // 0-64
+	InitialPan    int16 // 0-64
 	Mute          bool
 	Surround      bool
 }
@@ -84,7 +86,7 @@ type Instrument struct {
 
 	GlobalVolume int16
 
-	DefaultPan        int16
+	DefaultPan        int16 // 0-64
 	DefaultPanEnabled bool
 
 	RandomVolumeVariation int16 // percentage (0-100)
