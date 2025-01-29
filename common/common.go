@@ -147,9 +147,9 @@ type Sample struct {
 	Name        string
 	DosFilename string
 
-	GlobalVolume   int16
-	DefaultVolume  int16
-	DefaultPanning int16
+	GlobalVolume   int16 // 0-64
+	DefaultVolume  int16 // 0-64
+	DefaultPanning int16 // 0-32, |128 = Enabled
 
 	S16             bool
 	Stereo          bool
@@ -192,7 +192,21 @@ type PatternRow struct {
 	Entries []PatternEntry
 }
 
+const (
+	VcmdSetVolume      = 1
+	VcmdFineVolUp      = 2
+	VcmdFineVolDown    = 3
+	VcmdVolSlideUp     = 4
+	VcmdVolSlideDown   = 5
+	VcmdPitchSlideDown = 6
+	VcmdPitchSlideUp   = 7
+	VcmdSetPan         = 8
+	VcmdPortaToNote    = 9
+	VcmdVibratoDepth   = 10
+)
+
 type PatternEntry struct {
+	// Zero-based index of the channel.
 	Channel uint8
 
 	// 0 = Empty, 1 = C-0, 120 = B-9, 253 = NoteFade, 254 = NoteCut, 255 = NoteOff

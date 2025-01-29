@@ -12,14 +12,11 @@ import (
 	"io"
 	"os"
 
-	"go.mukunda.com/modlib/common"
 	"go.mukunda.com/modlib/itmod"
 )
 
 // Returned when the module format could not be detected.
 var ErrUnknownModuleFormat = errors.New("unknown or unsupported module format")
-
-type Module = common.Module
 
 // Load a module by filename.
 func LoadModule(filename string) (*Module, error) {
